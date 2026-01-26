@@ -221,6 +221,8 @@ class AgentRuntime:
         async with self._lock:
             # Stop all streams
             for stream in self._streams.values():
+                # Ensure cleanup of any orphaned tasks before stopping
+                await stream.cleanup_orphaned_tasks()
                 await stream.stop()
 
             self._streams.clear()

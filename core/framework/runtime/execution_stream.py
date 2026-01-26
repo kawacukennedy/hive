@@ -186,6 +186,8 @@ class ExecutionStream:
                     await task
                 except asyncio.CancelledError:
                     pass
+                except Exception as e:
+                    logger.warning(f"Error during execution cancellation: {e}")
 
         self._execution_tasks.clear()
         self._active_executions.clear()
@@ -349,6 +351,11 @@ class ExecutionStream:
                     )
 
             finally:
+                # Clean up execution task from tracking (critical for memory leak prevention)
+                async with self._lock:
+                    self._execution_tasks.pop(execution_id, None)
+                    self._active_executions.pop(execution_id, None)
+
                 # Clean up state
                 self._state_manager.cleanup_execution(execution_id)
 
@@ -436,8 +443,47 @@ class ExecutionStream:
                 await task
             except asyncio.CancelledError:
                 pass
+            except Exception as e:
+                logger.warning(f"Error during execution cancellation for {execution_id}: {e}")
+            finally:
+                # Ensure cleanup even if cancellation fails
+                async with self._lock:
+                    self._execution_tasks.pop(execution_id, None)
+                    self._active_executions.pop(execution_id, None)
+                self._state_manager.cleanup_execution(execution_id)
             return True
         return False
+
+    async def cleanup_orphaned_tasks(self) -> int:
+        """
+        Clean up orphaned tasks and execution state.
+        
+        This is a defensive measure to handle edge cases where tasks
+        might not be properly cleaned up due to unexpected exceptions.
+        
+        Returns:
+            Number of orphaned tasks cleaned up
+        """
+        orphaned_count = 0
+        
+        async with self._lock:
+            # Find tasks that are done but still tracked
+            orphaned_tasks = [
+                exec_id for exec_id, task in self._execution_tasks.items()
+                if task.done()
+            ]
+            
+            for exec_id in orphaned_tasks:
+                self._execution_tasks.pop(exec_id, None)
+                self._active_executions.pop(exec_id, None)
+                self._completion_events.pop(exec_id, None)
+                self._state_manager.cleanup_execution(exec_id)
+                orphaned_count += 1
+        
+        if orphaned_count > 0:
+            logger.info(f"Cleaned up {orphaned_count} orphaned execution tasks")
+        
+        return orphaned_count
 
     # === STATS AND MONITORING ===
 
@@ -460,6 +506,8 @@ class ExecutionStream:
             "running": self._running,
             "total_executions": len(self._active_executions),
             "completed_executions": len(self._execution_results),
+            "active_tasks": len(self._execution_tasks),
+            "pending_completions": len(self._completion_events),
             "status_counts": statuses,
             "max_concurrent": self.entry_spec.max_concurrent,
             "available_slots": self._semaphore._value,
