@@ -239,7 +239,16 @@ class EventBus:
                     logger.error(f"Handler error for {event.type}: {e}")
 
         # Run all handlers concurrently
-        await asyncio.gather(*[run_handler(h) for h in handlers], return_exceptions=True)
+        results = await asyncio.gather(*[run_handler(h) for h in handlers], return_exceptions=True)
+        
+        # Check for unhandled exceptions (e.g., cancellations or non-Exception BaseExceptions)
+        for i, result in enumerate(results):
+            if isinstance(result, BaseException):
+                if isinstance(result, asyncio.CancelledError):
+                    logger.warning(f"Handler {i} cancelled during event {event.type}")
+                    # Re-raise cancellation if critical? Usually we just log for pub/sub.
+                else:
+                    logger.error(f"Unhandled error in handler {i} for {event.type}: {result}")
 
     # === CONVENIENCE PUBLISHERS ===
 
