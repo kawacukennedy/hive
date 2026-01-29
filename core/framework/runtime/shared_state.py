@@ -468,7 +468,16 @@ class StreamMemory:
         Synchronous write (for compatibility with existing code).
 
         Always writes to execution scope for simplicity.
+
+        Raises:
+            RuntimeError: If isolation is SYNCHRONIZED (requires async lock).
         """
+        if self._isolation == IsolationLevel.SYNCHRONIZED:
+            raise RuntimeError(
+                "Cannot perform synchronous write on SYNCHRONIZED state. "
+                "Use async write() or correct isolation level."
+            )
+
         if self._allowed_write is not None and key not in self._allowed_write:
             raise PermissionError(f"Not allowed to write key: {key}")
 
