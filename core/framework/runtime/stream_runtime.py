@@ -96,6 +96,9 @@ class StreamRuntime:
         # Track current node per execution (for decision context)
         self._current_nodes: dict[str, str] = {}
 
+        # Track background tasks (e.g., storage saves)
+        self._background_tasks: set[asyncio.Task] = set()
+
     # === RUN LIFECYCLE ===
 
     def start_run(
@@ -161,10 +164,19 @@ class StreamRuntime:
         run.output_data = output_data or {}
         run.complete(status, narrative)
 
-        # Save to storage asynchronously
-        asyncio.create_task(self._save_run(execution_id, run))
+        # Save to storage asynchronously with tracking
+        task = asyncio.create_task(self._save_run(execution_id, run))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
         logger.debug(f"Ended run {run.id} for execution {execution_id}: {status.value}")
+
+    async def await_background_tasks(self) -> None:
+        """Wait for all background tasks to complete."""
+        if self._background_tasks:
+            logger.info(f"Waiting for {len(self._background_tasks)} background tasks...")
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+            logger.info("Background tasks completed.")
 
     async def _save_run(self, execution_id: str, run: Run) -> None:
         """Save run to storage and clean up."""
