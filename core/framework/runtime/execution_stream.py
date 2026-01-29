@@ -207,22 +207,27 @@ class ExecutionStream:
 
     async def stop(self) -> None:
         """Stop the execution stream and cancel active executions."""
-        if not self._running:
-            return
+        async with self._lock:
+            if not self._running:
+                return
 
-        self._running = False
+            self._running = False
+            
+            # Create list of tasks to cancel
+            tasks_to_cancel = list(self._execution_tasks.values())
+            
+            # Clear internal state immediately to prevent new tasks from completing
+            self._execution_tasks.clear()
+            self._active_executions.clear()
 
-        # Cancel all active executions
-        for _, task in self._execution_tasks.items():
+        # Cancel tasks outside lock to prevent deadlock if they call back into stream
+        for task in tasks_to_cancel:
             if not task.done():
                 task.cancel()
                 try:
                     await task
                 except asyncio.CancelledError:
                     pass
-
-        self._execution_tasks.clear()
-        self._active_executions.clear()
 
         logger.info(f"ExecutionStream '{self.stream_id}' stopped")
 
@@ -256,6 +261,7 @@ class ExecutionStream:
         Returns:
             Execution ID for tracking
         """
+        # Initial check (optimization)
         if not self._running:
             raise RuntimeError(f"ExecutionStream '{self.stream_id}' is not running")
 
@@ -276,12 +282,16 @@ class ExecutionStream:
         )
 
         async with self._lock:
+            # Re-check running state under lock to prevent race with stop()
+            if not self._running:
+                raise RuntimeError(f"ExecutionStream '{self.stream_id}' is not running")
+            
             self._active_executions[execution_id] = ctx
             self._completion_events[execution_id] = asyncio.Event()
 
-        # Start execution task
-        task = asyncio.create_task(self._run_execution(ctx))
-        self._execution_tasks[execution_id] = task
+            # Start execution task and register it atomically
+            task = asyncio.create_task(self._run_execution(ctx))
+            self._execution_tasks[execution_id] = task
 
         logger.debug(f"Queued execution {execution_id} for stream {self.stream_id}")
         return execution_id
