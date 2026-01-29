@@ -244,12 +244,15 @@ class OutcomeAggregator:
                 "recommendation": "continue",
             }
 
+            # Snapshot decisions to ensure consistency during async evaluation
+            decisions_snapshot = list(self._decisions)
+
             # Evaluate each success criterion
             total_weight = 0.0
             met_weight = 0.0
 
             for criterion in self.goal.success_criteria:
-                status = await self._evaluate_criterion(criterion)
+                status = await self._evaluate_criterion(criterion, decisions_snapshot)
                 self._criterion_status[criterion.id] = status
                 result["criteria_status"][criterion.id] = {
                     "description": status.description,
@@ -290,8 +293,8 @@ class OutcomeAggregator:
                     self._successful_outcomes
                     / max(1, self._successful_outcomes + self._failed_outcomes)
                 ),
-                "streams_active": len({d.stream_id for d in self._decisions}),
-                "executions_total": len({(d.stream_id, d.execution_id) for d in self._decisions}),
+                "streams_active": len({d.stream_id for d in decisions_snapshot}),
+                "executions_total": len({(d.stream_id, d.execution_id) for d in decisions_snapshot}),
             }
 
             # Determine recommendation
@@ -300,7 +303,7 @@ class OutcomeAggregator:
             # Publish progress event
             if self._event_bus:
                 # Get any stream ID for the event
-                stream_ids = {d.stream_id for d in self._decisions}
+                stream_ids = {d.stream_id for d in decisions_snapshot}
                 if stream_ids:
                     await self._event_bus.emit_goal_progress(
                         stream_id=list(stream_ids)[0],
@@ -310,7 +313,11 @@ class OutcomeAggregator:
 
             return result
 
-    async def _evaluate_criterion(self, criterion: Any) -> CriterionStatus:
+    async def _evaluate_criterion(
+        self, 
+        criterion: Any, 
+        decisions: list[DecisionRecord]
+    ) -> CriterionStatus:
         """
         Evaluate a single success criterion.
 
@@ -328,7 +335,7 @@ class OutcomeAggregator:
         # Get relevant decisions (those mentioning this criterion or related intents)
         relevant_decisions = [
             d
-            for d in self._decisions
+            for d in decisions
             if criterion.id in str(d.decision.active_constraints)
             or self._is_related_to_criterion(d.decision, criterion)
         ]
